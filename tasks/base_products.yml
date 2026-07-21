@@ -1,0 +1,76 @@
+---
+# ============================================================================
+# Install base OPSI products into the depot
+# The Docker image ships an almost-empty depot. opsi-script is a hard
+# dependency of the client agent (its absence causes a 404 during agent
+# deployment); hwaudit/swaudit are the usual first products to push.
+# opsi-package-updater is idempotent ("No new packages available" when current).
+# ============================================================================
+
+# The host wait_for on :4447 only proves the port is published - opsiconfd
+# inside the container may still be starting (DB migration, cert generation)
+# and refuse RPC. Gate on the API actually answering before we use it.
+- name: Wait for opsiconfd to answer JSON-RPC inside the container
+  ansible.builtin.command:
+    cmd: >-
+      docker compose exec -T opsi-server
+      opsi-cli jsonrpc execute host_getObjects '[]' '{"type":"OpsiConfigserver"}'
+    chdir: "{{ ludus_opsi_install_dir }}"
+  register: ludus_opsi_rpc_ready
+  changed_when: false
+  failed_when: false
+  retries: 30
+  delay: 10
+  until: ludus_opsi_rpc_ready.rc == 0
+
+- name: Install base products via opsi-package-updater
+  ansible.builtin.command:
+    cmd: >-
+      docker compose exec -T opsi-server
+      opsi-package-updater -v install {{ ludus_opsi_base_products | join(' ') }}
+    chdir: "{{ ludus_opsi_install_dir }}"
+  register: ludus_opsi_baseprod
+  changed_when: "'successfully installed' in ludus_opsi_baseprod.stdout"
+  failed_when: >-
+    ludus_opsi_baseprod.rc != 0
+    and 'No new packages available' not in ludus_opsi_baseprod.stdout
+  retries: 5
+  delay: 15
+  until: >-
+    ludus_opsi_baseprod.rc == 0
+    or 'No new packages available' in ludus_opsi_baseprod.stdout
+
+- name: Show installed base products result
+  ansible.builtin.debug:
+    var: ludus_opsi_baseprod.stdout_lines
+
+# ---------------------------------------------------------------------------
+# Fix the local opsiadmin group collision inside the container.
+# The opsi-server image ships a local 'opsiadmin' group (gid 1000, member
+# opsiconfd). NSS resolves 'files' first so opsiconfd's admin check finds the
+# local group (not the AD one) and rejects AD users with "not in allowed
+# groups". Renaming it lets SSSD's AD group win. Only runs when ad_login is
+# enabled. Idempotent: skips if already renamed.
+# ---------------------------------------------------------------------------
+- name: Rename local opsiadmin to opsiadmin-local inside the container
+  ansible.builtin.command:
+    cmd: >-
+      docker compose exec -T opsi-server bash -c
+      "getent group opsiadmin | grep -q ':1000:' && groupmod -n opsiadmin-local opsiadmin || echo 'already renamed'"
+    chdir: "{{ ludus_opsi_install_dir }}"
+  register: ludus_opsi_groupmod
+  changed_when: "'already renamed' not in ludus_opsi_groupmod.stdout"
+  when: ludus_opsi_ad_login_enabled | bool
+
+# ---------------------------------------------------------------------------
+# Make the configserver reachable by clients (see notes in defaults).
+# ---------------------------------------------------------------------------
+- name: Set clientconfig.configserver.url so agents can phone home
+  ansible.builtin.command:
+    cmd: >-
+      docker compose exec -T opsi-server opsi-cli jsonrpc execute config_updateObjects
+      '{"type":"UnicodeConfig","id":"clientconfig.configserver.url","defaultValues":["{{ ludus_opsi_configserver_url }}"]}'
+    chdir: "{{ ludus_opsi_install_dir }}"
+  register: ludus_opsi_cfgurl
+  changed_when: true
+  when: ludus_opsi_configserver_url | length > 0

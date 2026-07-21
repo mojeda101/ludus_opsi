@@ -1,0 +1,148 @@
+---
+# ============================================================================
+# opsi-directory-connector (Active Directory / LDAP synchronisation)
+# Runs natively on this host and talks to the OPSI container locally.
+# ============================================================================
+
+# --- OPSI APT repository (openSUSE Build Service) --------------------------
+- name: Determine the OBS distribution identifier
+  ansible.builtin.set_fact:
+    ludus_opsi_obs_dist: >-
+      {{ ('Debian_' ~ ansible_distribution_major_version)
+         if ansible_distribution == 'Debian'
+         else ('xUbuntu_' ~ ansible_distribution_version) }}
+
+- name: Add the OPSI repository GPG key
+  ansible.builtin.get_url:
+    url: >-
+      https://download.opensuse.org/repositories/home:/uibmz:/opsi:/4.3:/stable/{{ ludus_opsi_obs_dist }}/Release.key
+    dest: /etc/apt/keyrings/opsi-obs.asc
+    mode: "0644"
+
+- name: Configure the OPSI APT repository
+  ansible.builtin.apt_repository:
+    repo: >-
+      deb [signed-by=/etc/apt/keyrings/opsi-obs.asc]
+      https://download.opensuse.org/repositories/home:/uibmz:/opsi:/4.3:/stable/{{ ludus_opsi_obs_dist }}/ /
+    filename: opsi
+    state: present
+
+- name: Install opsi-directory-connector
+  ansible.builtin.apt:
+    name: opsi-directory-connector
+    state: present
+    update_cache: true
+
+# --- Optional: place the directory service CA certificate ------------------
+- name: Place the CA certificate for LDAPS
+  ansible.builtin.copy:
+    src: "{{ ludus_opsi_dc_ca_cert }}"
+    dest: /etc/opsi/opsi-dc-ldap-ca.pem
+    mode: "0644"
+  when: ludus_opsi_dc_ca_cert | length > 0
+
+# --- Assemble the configuration --------------------------------------------
+- name: Build the directory section
+  ansible.builtin.set_fact:
+    ludus_opsi_dc_directory:
+      address: "{{ ludus_opsi_dc_ldap_address }}"
+      user: "{{ ludus_opsi_dc_ldap_user }}"
+      password: "{{ ludus_opsi_dc_ldap_password }}"
+      passwordFile: ""
+      search_base: "{{ ludus_opsi_dc_search_base }}"
+      search_query_computers: "{{ ludus_opsi_dc_search_query_computers }}"
+      identifying_attribute: "{{ ludus_opsi_dc_identifying_attribute }}"
+      connection_options: >-
+        {{
+          {
+            'verify': ludus_opsi_dc_verify_certificate,
+            'paged_search_limit': ludus_opsi_dc_paged_search_limit
+          } | combine(
+            {'ca_cert_file': '/etc/opsi/opsi-dc-ldap-ca.pem'}
+            if ludus_opsi_dc_ca_cert | length > 0 else {}
+          )
+        }}
+
+- name: Build the behaviour section
+  ansible.builtin.set_fact:
+    ludus_opsi_dc_behaviour:
+      write_changes_to_opsi: "{{ ludus_opsi_dc_write_changes_to_opsi }}"
+      root_dir_in_opsi: "{{ ludus_opsi_dc_root_dir_in_opsi }}"
+      update_existing_clients: "{{ ludus_opsi_dc_update_existing_clients }}"
+      prefer_location_from_directory: "{{ ludus_opsi_dc_prefer_location_from_directory }}"
+      group_handling: "{{ ludus_opsi_dc_group_handling }}"
+      group_description: "{{ ludus_opsi_dc_group_description }}"
+      delete_empty_groups: "{{ ludus_opsi_dc_delete_empty_groups }}"
+      skip_adding_clients: "{{ ludus_opsi_dc_skip_adding_clients }}"
+
+- name: Build the mapping section
+  ansible.builtin.set_fact:
+    ludus_opsi_dc_mapping: >-
+      {{
+        {'client': ludus_opsi_dc_mapping_client}
+        | combine({'depot': ludus_opsi_dc_mapping_depot} if ludus_opsi_dc_mapping_depot | length > 0 else {})
+        | combine({'group_name': ludus_opsi_dc_mapping_group_name} if ludus_opsi_dc_mapping_group_name | length > 0 else {})
+      }}
+
+- name: Build the opsi section
+  ansible.builtin.set_fact:
+    ludus_opsi_dc_opsi:
+      address: "{{ ludus_opsi_dc_opsi_address }}"
+      username: "{{ ludus_opsi_dc_opsi_username }}"
+      password: "{{ ludus_opsi_dc_opsi_password }}"
+      exit_on_error: "{{ ludus_opsi_dc_opsi_exit_on_error }}"
+      passwordFile: ""
+      connection_options:
+        verify_certificate: "{{ ludus_opsi_dc_opsi_verify_certificate }}"
+
+- name: Assemble the full configuration
+  ansible.builtin.set_fact:
+    ludus_opsi_dc_config:
+      directory: "{{ ludus_opsi_dc_directory }}"
+      behaviour: "{{ ludus_opsi_dc_behaviour }}"
+      mapping: "{{ ludus_opsi_dc_mapping }}"
+      opsi: "{{ ludus_opsi_dc_opsi }}"
+
+- name: Ensure /etc/opsi exists
+  ansible.builtin.file:
+    path: /etc/opsi
+    state: directory
+    mode: "0755"
+
+- name: Write the connector configuration (JSON)
+  ansible.builtin.copy:
+    content: "{{ ludus_opsi_dc_config | to_nice_json(indent=4) }}"
+    dest: "{{ ludus_opsi_dc_config_path }}"
+    mode: "0600"
+
+- name: Create the log directory
+  ansible.builtin.file:
+    path: "{{ ludus_opsi_dc_log_file | dirname }}"
+    state: directory
+    mode: "0755"
+
+# --- systemd: service + timer ----------------------------------------------
+- name: Write the systemd service unit
+  ansible.builtin.template:
+    src: opsi-directory-connector.service.j2
+    dest: /etc/systemd/system/opsi-directory-connector.service
+    mode: "0644"
+  notify: "reload systemd"
+
+- name: Write the systemd timer unit
+  ansible.builtin.template:
+    src: opsi-directory-connector.timer.j2
+    dest: /etc/systemd/system/opsi-directory-connector.timer
+    mode: "0644"
+  when: ludus_opsi_dc_install_timer | bool
+  notify: "reload systemd"
+
+- name: Reload systemd
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start the timer
+  ansible.builtin.systemd:
+    name: opsi-directory-connector.timer
+    enabled: true
+    state: started
+  when: ludus_opsi_dc_install_timer | bool

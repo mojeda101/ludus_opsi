@@ -1,0 +1,9 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Sync clients from AD/LDAP to opsi (ludus_opsi)
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/opsi-directory-connector --config {{ ludus_opsi_dc_config_path }} --log-file {{ ludus_opsi_dc_log_file }}

@@ -1,0 +1,41 @@
+# {{ ansible_managed }}
+# LDAP-against-AD (no Kerberos realm join). Serves NSS + PAM on the host and,
+# via bind-mounted sockets, inside the opsi-server container.
+[sssd]
+config_file_version = 2
+services = nss, pam
+domains = {{ ludus_opsi_ad_login_domain }}
+
+[nss]
+# memory cache off so the bind-mounted /var/lib/sss/pipes socket is authoritative
+memcache_timeout = 0
+
+[pam]
+
+[domain/{{ ludus_opsi_ad_login_domain }}]
+id_provider = ldap
+auth_provider = ldap
+access_provider = permit
+ldap_schema = ad
+ldap_uri = {{ ludus_opsi_ad_login_ldap_uri }}
+ldap_search_base = {{ ludus_opsi_ad_login_search_base }}
+ldap_default_bind_dn = {{ ludus_opsi_ad_login_bind_dn }}
+ldap_default_authtok = {{ ludus_opsi_ad_login_bind_password }}
+ldap_id_mapping = true
+ldap_referrals = false
+ldap_user_name = sAMAccountName
+{% if ludus_opsi_ad_use_ldaps | bool %}
+ldap_tls_reqcert = {{ ludus_opsi_ad_login_tls_reqcert }}
+{% if ludus_opsi_ad_login_ca_cert | length > 0 %}
+ldap_tls_cacert = /etc/sssd/ad-ca.pem
+{% endif %}
+{% else %}
+# Plaintext LDAP (DC has no LDAPS cert). Bind + auth traffic is UNENCRYPTED.
+ldap_auth_disable_tls_never_use_in_production = true
+{% endif %}
+cache_credentials = true
+case_sensitive = false
+use_fully_qualified_names = false
+enumerate = false
+default_shell = {{ ludus_opsi_ad_login_default_shell }}
+fallback_homedir = {{ ludus_opsi_ad_login_fallback_homedir }}

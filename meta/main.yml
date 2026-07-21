@@ -1,0 +1,32 @@
+---
+dependencies: []
+
+galaxy_info:
+  role_name: ludus_opsi
+  author: mojeda101
+  description: >-
+    Installs an OPSI configserver (or depotserver) as a Docker Compose stack on
+    a Linux host and optionally configures the opsi-directory-connector to sync
+    clients from Active Directory / LDAP into OPSI.
+  company: ""
+  license: GPLv3
+  min_ansible_version: "2.10"
+  platforms:
+    - name: Debian
+      versions:
+        - bullseye
+        - bookworm
+    - name: Ubuntu
+      versions:
+        - focal
+        - jammy
+        - noble
+  galaxy_tags:
+    - ludus
+    - opsi
+    - docker
+    - deployment
+    - activedirectory
+    - ldap
+
+collections: []

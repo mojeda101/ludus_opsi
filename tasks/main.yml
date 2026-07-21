@@ -1,0 +1,60 @@
+---
+# ============================================================================
+# ludus_opsi - main entry point
+# ============================================================================
+
+- name: Assert the role runs on a supported Linux host
+  ansible.builtin.assert:
+    that:
+      - ansible_os_family in ['Debian']
+    fail_msg: >-
+      This role only supports Debian/Ubuntu (Docker host).
+      The OPSI server and the directory-connector run on Linux only.
+    success_msg: "Host OS supported ({{ ansible_distribution }} {{ ansible_distribution_version }})."
+
+- name: Lab-use-only notice
+  ansible.builtin.debug:
+    msg: >-
+      ludus_opsi is intended for Ludus ranges and lab use only - it uses lab
+      defaults (weak passwords, TLS verification off) and is not hardened for
+      production.
+
+- name: Ensure the local admin keeps sudo (independent of SSSD)
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/ludus-localuser
+    content: "{{ ludus_opsi_local_sudo_user }} ALL=(ALL) NOPASSWD:ALL\n"
+    owner: root
+    group: root
+    mode: "0440"
+    validate: "visudo -cf %s"
+  when: ludus_opsi_preserve_local_sudo | bool
+
+- name: Install Docker engine and the compose plugin
+  ansible.builtin.include_tasks: docker.yml
+
+- name: Prepare AD login (host SSSD + derived image) before the stack
+  ansible.builtin.include_tasks: ad_login.yml
+  when: ludus_opsi_ad_login_enabled | bool
+
+- name: Deploy the OPSI server stack
+  ansible.builtin.include_tasks: opsi_server.yml
+
+- name: Install base OPSI products into the depot
+  ansible.builtin.include_tasks: base_products.yml
+  when: ludus_opsi_install_base_products | bool
+
+- name: Set up the directory connector (AD integration)
+  ansible.builtin.include_tasks: directory_connector.yml
+  when: ludus_opsi_directory_connector_enabled | bool
+
+- name: Configure AD/LDAP authentication for opsiconfd
+  ansible.builtin.include_tasks: ldap_auth.yml
+  when: ludus_opsi_ldap_auth_enabled | bool
+
+- name: License-free AD -> OPSI client sync (alternative to the paid connector)
+  ansible.builtin.include_tasks: ad_sync.yml
+  when: ludus_opsi_ad_sync_enabled | bool
+
+- name: Deploy the opsi-client-agent to Windows clients (push)
+  ansible.builtin.include_tasks: deploy_agents.yml
+  when: ludus_opsi_deploy_agents | length > 0

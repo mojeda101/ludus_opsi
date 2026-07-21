@@ -1,0 +1,335 @@
+---
+# ============================================================================
+# ludus_opsi - OPSI configserver (Docker) with Active Directory integration
+# ----------------------------------------------------------------------------
+# LAB USE ONLY: built for Ludus ranges and throwaway labs - NOT production.
+# Ships weak default passwords, disables TLS verification by default, and uses
+# a permissive SSSD access policy. Do not run on production/internet-facing
+# systems. See the README disclaimer.
+# ----------------------------------------------------------------------------
+# All variables are prefixed with "ludus_opsi_" to avoid name collisions with
+# other roles.
+# ============================================================================
+
+# ---------------------------------------------------------------------------
+# General / Docker stack
+# ---------------------------------------------------------------------------
+
+# Install directory of the OPSI Docker stack on the Linux host
+ludus_opsi_install_dir: /opt/opsi-server
+
+# Docker image tag of the OPSI server (uibmz/opsi-server)
+ludus_opsi_image_tag: "4.3"
+
+# Hostname and domain name of the OPSI container
+ludus_opsi_hostname: opsi
+ludus_opsi_domainname: "{{ ludus_opsi_dc_ad_fqdn | default('ludus.domain') }}"
+
+# OPSI server role: "configserver" or "depotserver"
+ludus_opsi_host_role: configserver
+
+# Timezone for all containers
+ludus_opsi_timezone: "Europe/Berlin"
+
+# Enable TFTP/PXE boot (opsipxeconfd + opsi-tftpd-hpa)? ("true"/"false")
+ludus_opsi_tftpboot: "true"
+
+# Published HTTPS port of opsiconfd
+# (admin page, opsi-configed, JSON-RPC API)
+ludus_opsi_https_port: 4447
+
+# Publish the TFTP port (UDP) when ludus_opsi_tftpboot == "true"
+ludus_opsi_tftp_port: 69
+
+# Grafana and MySQL are not needed for a pure depotserver.
+# When host_role == "depotserver" these services are omitted automatically.
+ludus_opsi_deploy_grafana: "{{ ludus_opsi_host_role == 'configserver' }}"
+ludus_opsi_deploy_mysql: "{{ ludus_opsi_host_role == 'configserver' }}"
+
+# Only relevant for host_role == "depotserver":
+ludus_opsi_service_address: ""   # service URL of the OPSI configserver
+ludus_opsi_host_key: ""          # host key of the depot
+
+# ---------------------------------------------------------------------------
+# Passwords
+# Fine as defaults in a lab/range - change them in any real environment!
+# ---------------------------------------------------------------------------
+ludus_opsi_admin_password: "LudusOpsiAdmin1"      # user 'adminuser'
+ludus_opsi_root_password: ""                        # empty = no root password in the container
+ludus_opsi_mysql_root_password: "LudusMysqlRoot1"
+ludus_opsi_mysql_password: "LudusMysqlOpsi1"
+ludus_opsi_redis_password: "LudusRedisPw1"
+ludus_opsi_grafana_admin_password: "LudusGrafanaPw1"
+
+# ---------------------------------------------------------------------------
+# OPSI modules license file (optional)
+# The "modules" file unlocks paid extensions (including the directory-connector).
+# When ludus_opsi_modules_file_src is set, the file is copied into the running
+# container at /etc/opsi/modules and opsiconfd is restarted.
+# A free evaluation license is available from uib via info@uib.de.
+# ---------------------------------------------------------------------------
+ludus_opsi_modules_file_src: ""
+
+# ---------------------------------------------------------------------------
+# Directory connector (Active Directory / LDAP integration)
+# ----------------------------------------------------------------------------
+# The opsi-directory-connector extension synchronises clients from an
+# LDAP-capable directory service (Active Directory, Samba 4) into OPSI.
+# It is installed NATIVELY on this Linux host (not in the container) and talks
+# to the OPSI container over the published port.
+#
+# WARNING: paid OPSI extension -> requires a valid modules license on the
+# configserver (see ludus_opsi_modules_file_src).
+# ---------------------------------------------------------------------------
+ludus_opsi_directory_connector_enabled: false
+
+# --- Connection to the directory service ("directory" section) -------------
+# AD FQDN (also reused for the container domain name)
+ludus_opsi_dc_ad_fqdn: "ludus.domain"
+
+# LDAP address of the domain controller.
+#   ldap://<ip>         -> cleartext (port 389, start_tls enabled by default)
+#   ldaps://<ip>        -> SSL (port 636)
+#   <ip>:636            -> implies SSL
+ludus_opsi_dc_ldap_address: "ldaps://10.10.10.11:636"
+
+# Bind user: "DOMAIN\\user" (down-level), "user@domain" (UPN) or full DN.
+# Recommendation: dedicated, read-only service account.
+ludus_opsi_dc_ldap_user: 'LUDUS\opsiconnector'
+ludus_opsi_dc_ldap_password: "ChangeMe123x"
+
+# Search base and filter for computer objects
+ludus_opsi_dc_search_base: "dc=ludus,dc=domain"
+ludus_opsi_dc_search_query_computers: "(objectClass=computer)"
+
+# Identifying attribute. In Active Directory "distinguishedName" is common;
+# the extension default would be "dn".
+ludus_opsi_dc_identifying_attribute: "distinguishedName"
+
+# Verify the DC's SSL certificate? Usually false in a lab with a self-signed CA.
+ludus_opsi_dc_verify_certificate: false
+
+# Optional CA file for verification (empty = none)
+ludus_opsi_dc_ca_cert: ""
+
+# Paged search (integer)
+ludus_opsi_dc_paged_search_limit: 768
+
+# --- Behaviour ("behaviour" section) ---------------------------------------
+ludus_opsi_dc_write_changes_to_opsi: true
+ludus_opsi_dc_root_dir_in_opsi: "clientdirectory"
+ludus_opsi_dc_update_existing_clients: true
+ludus_opsi_dc_prefer_location_from_directory: true
+ludus_opsi_dc_group_handling: "dn"          # "dn" or "ucsatschool"
+ludus_opsi_dc_group_description: "dn"
+ludus_opsi_dc_delete_empty_groups: false
+ludus_opsi_dc_skip_adding_clients: false
+
+# --- Client attribute mapping ("mapping" -> "client") ----------------------
+# Key = OPSI attribute, value = directory attribute (empty = no mapping)
+ludus_opsi_dc_mapping_client:
+  id: "name"
+  description: "description"
+  notes: ""
+  hardwareAddress: ""
+  ipAddress: ""
+  inventoryNumber: ""
+  oneTimePassword: ""
+
+# Optional depot assignment by network (leave empty = none).
+# Example:
+#   ludus_opsi_dc_mapping_depot:
+#     type: network
+#     "depot1.ludus.domain": ["10.10.10.0/24"]
+ludus_opsi_dc_mapping_depot: {}
+
+# Optional manual group name mapping (lowercase!). Example:
+#   ludus_opsi_dc_mapping_group_name:
+#     "_server": "server"
+ludus_opsi_dc_mapping_group_name: {}
+
+# --- Connection to the OPSI server ("opsi" section) ------------------------
+# The connector runs locally and talks to the container over the published port.
+ludus_opsi_dc_opsi_address: "https://localhost:{{ ludus_opsi_https_port }}"
+ludus_opsi_dc_opsi_username: "adminuser"
+ludus_opsi_dc_opsi_password: "{{ ludus_opsi_admin_password }}"
+ludus_opsi_dc_opsi_exit_on_error: false
+ludus_opsi_dc_opsi_verify_certificate: false
+
+# --- Scheduled execution (systemd timer) -----------------------------------
+# First run after boot + then at a fixed interval.
+ludus_opsi_dc_install_timer: true
+ludus_opsi_dc_on_boot_sec: "5min"
+ludus_opsi_dc_on_unit_active_sec: "1h"
+
+# Config and log paths of the connector on the host
+ludus_opsi_dc_config_path: "/etc/opsi/opsidirectoryconnector-custom.conf"
+ludus_opsi_dc_log_file: "/var/log/opsi/directory-connector.log"
+
+# ---------------------------------------------------------------------------
+# AD/LDAP authentication for opsiconfd (directory users log into OPSI)
+# ----------------------------------------------------------------------------
+# Independent of the directory connector's client sync: this lets AD users
+# authenticate to configed / WebGUI / admin page. Permissions follow the
+# opsiadmin / opsifileadmins / opsireadonlys groups, which MUST exist in AD.
+#
+# WARNING: this OPSI feature also requires the paid directory connector module
+# (see ludus_opsi_modules_file_src).
+# ---------------------------------------------------------------------------
+ludus_opsi_ldap_auth_enabled: false
+
+# LDAP URL: ldap[s]://<address>[:port]/<base-dn>
+ludus_opsi_ldap_auth_url: "ldaps://dc01.ludus.domain/dc=ludus,dc=domain"
+
+# Bind user template. Placeholders {username} and {base} are allowed.
+#   AD / Samba 4 : "{username}@ludus.domain"
+#   OpenLDAP     : "uid={username},dc=Users,{base}"
+ludus_opsi_ldap_auth_bind_user: "{username}@ludus.domain"
+
+# ===========================================================================
+# Shared AD connection for the FREE features (client sync + PAM/SSSD login)
+# ---------------------------------------------------------------------------
+# Configure the DC once here; both ludus_opsi_ad_sync_* and ludus_opsi_ad_login_*
+# derive from these. (The PAID directory-connector uses the separate
+# ludus_opsi_dc_* variables instead.)
+#
+# Does the AD DC present a valid LDAPS certificate?
+#   true  -> LDAPS (ldaps://<dc>:636); cert handling via *_tls_reqcert / _ca_cert
+#   false -> plaintext LDAP (ldap://<dc>). Ludus DCs have NO LDAPS cert by
+#            default, so use false in a plain Ludus range.
+#            WARNING: bind + auth traffic are then UNENCRYPTED - lab use only.
+ludus_opsi_ad_use_ldaps: true
+
+# DC hostname or IP (no scheme). Scheme/port are derived from _use_ldaps.
+ludus_opsi_ad_dc_host: "dc01.ludus.domain"
+
+# Read-only bind account. A UPN or DN works everywhere; the sync also accepts
+# a down-level "DOMAIN\\user".
+ludus_opsi_ad_bind_dn: "domainuser@ludus.domain"
+ludus_opsi_ad_bind_password: "password"
+
+# Base DN for user/computer searches.
+ludus_opsi_ad_search_base: "dc=ludus,dc=domain"
+
+# ---------------------------------------------------------------------------
+# License-free AD -> OPSI client sync (alternative to the paid connector)
+# ---------------------------------------------------------------------------
+# Pulls computer objects from AD and creates OpsiClients (and assigns them to
+# the configserver depot so they are usable / visible in configed + WebGUI),
+# using only free OPSI JSON-RPC methods. Use THIS or
+# ludus_opsi_directory_connector_enabled - not both. No modules license needed.
+# ---------------------------------------------------------------------------
+ludus_opsi_ad_sync_enabled: false
+
+# LDAP connection - derived from the shared block above by default.
+ludus_opsi_ad_sync_ldap_address: "{{ 'ldaps://' ~ ludus_opsi_ad_dc_host ~ ':636' if ludus_opsi_ad_use_ldaps | bool else 'ldap://' ~ ludus_opsi_ad_dc_host }}"
+ludus_opsi_ad_sync_ldap_user: "{{ ludus_opsi_ad_bind_dn }}"
+ludus_opsi_ad_sync_ldap_password: "{{ ludus_opsi_ad_bind_password }}"
+ludus_opsi_ad_sync_search_base: "{{ ludus_opsi_ad_search_base }}"
+ludus_opsi_ad_sync_search_query_computers: "(objectClass=computer)"
+# FQDN suffix used when a computer object has no dNSHostName.
+# Empty -> derived from the dc= parts of the search base.
+ludus_opsi_ad_sync_domain: ""
+ludus_opsi_ad_sync_verify_certificate: false
+ludus_opsi_ad_sync_ca_cert: ""
+ludus_opsi_ad_sync_paged_search_limit: 768
+
+# Behaviour
+ludus_opsi_ad_sync_write_changes: true       # false = read-only (logs only)
+ludus_opsi_ad_sync_root_dir: "clientdirectory"
+ludus_opsi_ad_sync_groups_from_ou: false     # create/assign a host group per OU
+# Depot each created client is assigned to (required to be usable + visible in
+# the GUI). "auto" resolves the configserver id via RPC; set a specific depot
+# id to override, or "" to skip depot assignment.
+ludus_opsi_ad_sync_depot: "auto"
+
+# OPSI JSON-RPC target (the local container; uses the free adminuser account)
+ludus_opsi_ad_sync_opsi_address: "https://localhost:{{ ludus_opsi_https_port }}"
+ludus_opsi_ad_sync_opsi_username: "adminuser"
+ludus_opsi_ad_sync_opsi_password: "{{ ludus_opsi_admin_password }}"
+ludus_opsi_ad_sync_opsi_verify_certificate: false
+
+# Schedule (systemd timer) + paths
+ludus_opsi_ad_sync_install_timer: true
+ludus_opsi_ad_sync_on_boot_sec: "5min"
+ludus_opsi_ad_sync_on_unit_active_sec: "1h"
+ludus_opsi_ad_sync_config_path: "/etc/opsi/ad-sync.json"
+
+# ---------------------------------------------------------------------------
+# AD login WITHOUT the paid module (PAM/SSSD)
+# ---------------------------------------------------------------------------
+# Lets AD users log into OPSI (configed / WebGUI / admin page) for free, as an
+# alternative to the paid [ldap_auth] feature. SSSD runs on the host against AD
+# and is bind-mounted into a thin derived opsi-server image. opsiconfd
+# authenticates AD users via PAM and grants admin to members of an AD group
+# named like [groups] admingroup (default 'opsiadmin').
+#
+# REQUIREMENTS in AD: create a group named exactly like ludus_opsi_ad_login_admin_group
+# (default 'opsiadmin') and put your admin users in it. Use lowercase usernames.
+# ---------------------------------------------------------------------------
+ludus_opsi_ad_login_enabled: false
+
+# SSSD domain section name (free-form; the AD FQDN is a fine choice).
+ludus_opsi_ad_login_domain: "{{ ludus_opsi_dc_ad_fqdn }}"
+
+# LDAP connection - derived from the shared block above by default.
+ludus_opsi_ad_login_ldap_uri: "{{ 'ldaps://' ~ ludus_opsi_ad_dc_host if ludus_opsi_ad_use_ldaps | bool else 'ldap://' ~ ludus_opsi_ad_dc_host }}"
+ludus_opsi_ad_login_search_base: "{{ ludus_opsi_ad_search_base }}"
+ludus_opsi_ad_login_bind_dn: "{{ ludus_opsi_ad_bind_dn }}"
+ludus_opsi_ad_login_bind_password: "{{ ludus_opsi_ad_bind_password }}"
+
+# LDAPS certificate checking (only used when ludus_opsi_ad_use_ldaps is true):
+# "never" for a self-signed lab CA, "demand" with a CA file below.
+ludus_opsi_ad_login_tls_reqcert: "never"
+ludus_opsi_ad_login_ca_cert: ""
+
+# POSIX attributes SSSD synthesises for AD users (needed for interactive login).
+ludus_opsi_ad_login_default_shell: "/bin/bash"
+ludus_opsi_ad_login_fallback_homedir: "/home/%u"
+
+# AD group that grants OPSI admin. Must match [groups] admingroup in opsi.conf
+# (OPSI default is 'opsiadmin').
+ludus_opsi_ad_login_admin_group: "opsiadmin"
+
+# ---------------------------------------------------------------------------
+# Base products in the depot + configserver reachability
+# ---------------------------------------------------------------------------
+# The Docker image ships an almost-empty depot. Install the essentials so the
+# agent can deploy (opsi-script is its hard dependency) and you have products
+# to push. Idempotent.
+ludus_opsi_install_base_products: true
+ludus_opsi_base_products:
+  - opsi-script
+  - opsi-client-agent
+  - opsi-configed
+  - hwaudit
+  - swaudit
+
+# Address agents phone home to (clientconfig.configserver.url). Default uses
+# this VM's IP so clients don't need to resolve the server's FQDN. Set to ""
+# to leave OPSI's default (server FQDN) untouched - only do that if the clients
+# can resolve it (e.g. you added a DNS A record for the server on the DC).
+# hostname form (cert-valid, requires DNS A record on DC via ludus_opsi_client dc mode)
+# IP form used as fallback if no DNS record created
+ludus_opsi_configserver_url: "https://{{ ansible_default_ipv4.address }}:{{ ludus_opsi_https_port }}/rpc"
+
+# ---------------------------------------------------------------------------
+# Optional: push the opsi-client-agent to Windows clients
+# ---------------------------------------------------------------------------
+# List of {id, ip} maps. Empty = do nothing. Requires DCOM/WMI + SMB open on
+# the clients (see tasks/deploy_agents.yml). Example:
+#   ludus_opsi_deploy_agents:
+#     - { id: "win11.ludus.domain", ip: "10.16.10.21" }
+#     - { id: "files.ludus.domain", ip: "10.16.10.22" }
+ludus_opsi_deploy_agents: []
+# Local-admin credentials on the clients (a domain admin works via the domain).
+ludus_opsi_deploy_user: 'LUDUS\domainadmin'
+ludus_opsi_deploy_password: "password"
+
+# ---------------------------------------------------------------------------
+# Keep the local admin's sudo working regardless of SSSD (safeguard)
+# Writes /etc/sudoers.d/ludus-localuser so a flaky/offline SSSD can never lock
+# the local admin out of sudo on the OPSI host.
+# ---------------------------------------------------------------------------
+ludus_opsi_preserve_local_sudo: true
+ludus_opsi_local_sudo_user: "localuser"

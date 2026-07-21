@@ -1,0 +1,37 @@
+---
+# Recreate the stack when the compose/env files have changed
+- name: Recreate opsi stack
+  ansible.builtin.command:
+    cmd: "docker compose up -d --remove-orphans{{ ' --build' if ludus_opsi_ad_login_enabled | bool else '' }}"
+    chdir: "{{ ludus_opsi_install_dir }}"
+  changed_when: true
+  listen: "opsi compose recreate"
+
+# Reload systemd after unit files change
+- name: Systemd daemon-reload
+  ansible.builtin.systemd:
+    daemon_reload: true
+  listen: "reload systemd"
+
+# Restart the opsi-server container and wait for it to come back
+- name: Restart opsi-server
+  ansible.builtin.command:
+    cmd: docker compose restart opsi-server
+    chdir: "{{ ludus_opsi_install_dir }}"
+  changed_when: true
+  listen: "opsi-server restart"
+
+- name: Wait for opsiconfd after restart
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ ludus_opsi_https_port }}"
+    timeout: 300
+    delay: 10
+  listen: "opsi-server restart"
+
+# Restart host SSSD after config changes
+- name: Restart sssd
+  ansible.builtin.systemd:
+    name: sssd
+    state: restarted
+  listen: "restart sssd"

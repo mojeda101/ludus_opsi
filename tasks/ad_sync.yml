@@ -1,0 +1,90 @@
+---
+# ============================================================================
+# License-free AD -> OPSI client sync (alternative to the paid connector)
+# Reads computer objects from AD over LDAP and creates OpsiClients via the
+# core (free) JSON-RPC API. Runs natively on this host via a systemd timer.
+# ============================================================================
+
+- name: Install python3-ldap3 for the sync tool
+  ansible.builtin.apt:
+    name: python3-ldap3
+    state: present
+    update_cache: true
+
+- name: Install the opsi-ad-sync tool
+  ansible.builtin.copy:
+    src: opsi-ad-sync.py
+    dest: /usr/local/bin/opsi-ad-sync
+    mode: "0755"
+
+- name: Ensure /etc/opsi exists
+  ansible.builtin.file:
+    path: /etc/opsi
+    state: directory
+    mode: "0755"
+
+- name: Assemble the sync configuration
+  ansible.builtin.set_fact:
+    ludus_opsi_ad_sync_config:
+      directory:
+        address: "{{ ludus_opsi_ad_sync_ldap_address }}"
+        user: "{{ ludus_opsi_ad_sync_ldap_user }}"
+        password: "{{ ludus_opsi_ad_sync_ldap_password }}"
+        search_base: "{{ ludus_opsi_ad_sync_search_base }}"
+        search_query_computers: "{{ ludus_opsi_ad_sync_search_query_computers }}"
+        domain: "{{ ludus_opsi_ad_sync_domain }}"
+        verify_certificate: "{{ ludus_opsi_ad_sync_verify_certificate | bool }}"
+        ca_cert_file: "{{ ludus_opsi_ad_sync_ca_cert }}"
+        paged_search_limit: "{{ ludus_opsi_ad_sync_paged_search_limit | int }}"
+      behaviour:
+        write_changes_to_opsi: "{{ ludus_opsi_ad_sync_write_changes | bool }}"
+        root_dir_in_opsi: "{{ ludus_opsi_ad_sync_root_dir }}"
+        create_groups_from_ou: "{{ ludus_opsi_ad_sync_groups_from_ou | bool }}"
+        depot: "{{ ludus_opsi_ad_sync_depot }}"
+      opsi:
+        address: "{{ ludus_opsi_ad_sync_opsi_address }}"
+        username: "{{ ludus_opsi_ad_sync_opsi_username }}"
+        password: "{{ ludus_opsi_ad_sync_opsi_password }}"
+        verify_certificate: "{{ ludus_opsi_ad_sync_opsi_verify_certificate | bool }}"
+
+- name: Write the sync configuration (JSON)
+  ansible.builtin.copy:
+    content: "{{ ludus_opsi_ad_sync_config | to_nice_json(indent=4) }}"
+    dest: "{{ ludus_opsi_ad_sync_config_path }}"
+    mode: "0600"
+
+- name: Write the systemd service unit
+  ansible.builtin.template:
+    src: opsi-ad-sync.service.j2
+    dest: /etc/systemd/system/opsi-ad-sync.service
+    mode: "0644"
+  notify: "reload systemd"
+
+- name: Write the systemd timer unit
+  ansible.builtin.template:
+    src: opsi-ad-sync.timer.j2
+    dest: /etc/systemd/system/opsi-ad-sync.timer
+    mode: "0644"
+  when: ludus_opsi_ad_sync_install_timer | bool
+  notify: "reload systemd"
+
+- name: Reload systemd
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start the sync timer
+  ansible.builtin.systemd:
+    name: opsi-ad-sync.timer
+    enabled: true
+    state: started
+  when: ludus_opsi_ad_sync_install_timer | bool
+
+- name: Run an initial dry-run sync (informational)
+  ansible.builtin.command:
+    cmd: /usr/local/bin/opsi-ad-sync --config {{ ludus_opsi_ad_sync_config_path }} --dry-run
+  register: ludus_opsi_ad_sync_dryrun
+  changed_when: false
+  failed_when: false
+
+- name: Show the dry-run result
+  ansible.builtin.debug:
+    var: ludus_opsi_ad_sync_dryrun.stdout_lines

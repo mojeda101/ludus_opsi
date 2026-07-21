@@ -1,0 +1,63 @@
+---
+# ============================================================================
+# Push the opsi-client-agent to Windows clients (server-side deploy)
+# Uses the deploy tool bundled in the agent product inside the container.
+#
+# PREREQUISITES (the role cannot set these on the Windows clients for you):
+#   - The clients must allow DCOM/WMI inbound (firewall group
+#     "Windows Management Instrumentation (WMI)") AND SMB (445, admin$/c$).
+#   - clientconfig.configserver.url must resolve/route from the clients
+#     (set ludus_opsi_configserver_url, or add a DNS A record for the server).
+# If client firewalls block DCOM, use the pull instead: run
+#   https://<server>:4447/public/opsi-client-agent/opsi-client-agent-installer.exe
+# on each client (service_setup.cmd), which needs none of the above.
+#
+# ludus_opsi_deploy_agents is a list of {id, ip} maps, e.g.:
+#   - { id: "win11.ludus.domain", ip: "10.16.10.21" }
+# ============================================================================
+
+- name: Resolve the configserver depot id
+  ansible.builtin.command:
+    cmd: >-
+      docker compose exec -T opsi-server
+      opsi-cli --output-format json jsonrpc execute host_getObjects '[]' '{"type":"OpsiConfigserver"}'
+    chdir: "{{ ludus_opsi_install_dir }}"
+  register: ludus_opsi_depot_ident
+  changed_when: false
+
+- name: Extract depot id
+  ansible.builtin.set_fact:
+    ludus_opsi_deploy_depot: "{{ (ludus_opsi_depot_ident.stdout | from_json)[0].id }}"
+
+# The deploy tool needs to resolve the client FQDNs. The opsi box does not use
+# the AD DNS, so add temporary /etc/hosts entries inside the container for the
+# targets (ephemeral; only needed for this deploy run).
+- name: Add client name resolution into the container
+  ansible.builtin.command:
+    cmd: >-
+      docker compose exec -T opsi-server bash -c
+      "grep -q ' {{ item.id }}$' /etc/hosts || echo '{{ item.ip }} {{ item.id }}' >> /etc/hosts"
+    chdir: "{{ ludus_opsi_install_dir }}"
+  loop: "{{ ludus_opsi_deploy_agents }}"
+  loop_control:
+    label: "{{ item.id }}"
+  changed_when: true
+
+- name: Push opsi-client-agent to the clients
+  ansible.builtin.command:
+    cmd: >-
+      docker compose exec -T opsi-server bash -lc
+      "cd /data/lib/depot/opsi-client-agent &&
+       ./opsi-deploy-client-agent -v --use-fqdn --skip-existing-clients
+       --depot {{ ludus_opsi_deploy_depot }}
+       --username '{{ ludus_opsi_deploy_user }}' --password '{{ ludus_opsi_deploy_password }}'
+       {{ ludus_opsi_deploy_agents | map(attribute='id') | join(' ') }}"
+    chdir: "{{ ludus_opsi_install_dir }}"
+  register: ludus_opsi_deploy_result
+  changed_when: "'deployments successful' in ludus_opsi_deploy_result.stdout"
+  failed_when: false
+  no_log: true          # command line contains the deploy password
+
+- name: Show deploy result
+  ansible.builtin.debug:
+    var: ludus_opsi_deploy_result.stdout_lines

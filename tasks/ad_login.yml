@@ -1,0 +1,58 @@
+---
+# ============================================================================
+# AD login for OPSI WITHOUT the paid module (PAM/SSSD)
+# SSSD runs on the host (LDAP-against-AD, no realm join) and serves NSS+PAM.
+# A thin derived opsi-server image adds the SSSD client libs and wires NSS/PAM;
+# the host's /var/lib/sss/pipes is bind-mounted in so the container uses the
+# host's SSSD daemon. opsiconfd then authenticates AD users via PAM and grants
+# admin to members of the AD group named like [groups] admingroup (opsiadmin).
+# ============================================================================
+
+- name: Install SSSD and LDAP client tools on the host
+  ansible.builtin.apt:
+    name:
+      - sssd
+      - sssd-ldap
+      - libnss-sss
+      - libpam-sss
+      - ldap-utils
+    state: present
+    update_cache: true
+
+- name: Place the AD CA certificate for SSSD
+  ansible.builtin.copy:
+    src: "{{ ludus_opsi_ad_login_ca_cert }}"
+    dest: /etc/sssd/ad-ca.pem
+    mode: "0644"
+  when: ludus_opsi_ad_login_ca_cert | length > 0
+
+- name: Write /etc/sssd/sssd.conf
+  ansible.builtin.template:
+    src: sssd.conf.j2
+    dest: /etc/sssd/sssd.conf
+    owner: root
+    group: root
+    mode: "0600"
+  notify: "restart sssd"
+
+- name: Enable and start SSSD on the host
+  ansible.builtin.systemd:
+    name: sssd
+    enabled: true
+    state: started
+
+- name: Apply pending SSSD restart
+  ansible.builtin.meta: flush_handlers
+
+- name: Create the derived-image build context
+  ansible.builtin.file:
+    path: "{{ ludus_opsi_install_dir }}/opsi-sssd"
+    state: directory
+    mode: "0750"
+
+- name: Render the derived-image Dockerfile
+  ansible.builtin.template:
+    src: Dockerfile.opsi-sssd.j2
+    dest: "{{ ludus_opsi_install_dir }}/opsi-sssd/Dockerfile"
+    mode: "0640"
+  notify: "opsi compose recreate"

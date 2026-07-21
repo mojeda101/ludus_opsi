@@ -1,0 +1,10 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Run the opsi-directory-connector at regular intervals (ludus_opsi)
+
+[Timer]
+OnBootSec={{ ludus_opsi_dc_on_boot_sec }}
+OnUnitActiveSec={{ ludus_opsi_dc_on_unit_active_sec }}
+
+[Install]
+WantedBy=timers.target

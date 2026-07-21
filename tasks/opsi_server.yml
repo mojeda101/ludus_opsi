@@ -1,0 +1,62 @@
+---
+# ============================================================================
+# OPSI server as a Docker Compose stack
+# ============================================================================
+
+- name: Create the install directory
+  ansible.builtin.file:
+    path: "{{ ludus_opsi_install_dir }}"
+    state: directory
+    mode: "0750"
+
+- name: Write docker-compose.yml
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ ludus_opsi_install_dir }}/docker-compose.yml"
+    mode: "0640"
+  notify: "opsi compose recreate"
+
+- name: Pull images and start the stack
+  ansible.builtin.command:
+    cmd: "docker compose up -d --remove-orphans{{ ' --build' if ludus_opsi_ad_login_enabled | bool else '' }}"
+    chdir: "{{ ludus_opsi_install_dir }}"
+  register: ludus_opsi_compose_up
+  changed_when: >-
+    ('Started' in ludus_opsi_compose_up.stderr)
+    or ('Created' in ludus_opsi_compose_up.stderr)
+    or ('Recreate' in ludus_opsi_compose_up.stderr)
+
+- name: Wait until opsiconfd is reachable on the HTTPS port
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ ludus_opsi_https_port }}"
+    timeout: 300
+    delay: 10
+
+# ---------------------------------------------------------------------------
+# Optional: install the modules license file into the container
+# ---------------------------------------------------------------------------
+- name: Install the OPSI modules license
+  when: ludus_opsi_modules_file_src | length > 0
+  block:
+    - name: Copy the modules file to the host
+      ansible.builtin.copy:
+        src: "{{ ludus_opsi_modules_file_src }}"
+        dest: "{{ ludus_opsi_install_dir }}/modules"
+        mode: "0640"
+
+    - name: Determine the container ID of the opsi-server service
+      ansible.builtin.command:
+        cmd: docker compose ps -q opsi-server
+        chdir: "{{ ludus_opsi_install_dir }}"
+      register: ludus_opsi_container_id
+      changed_when: false
+
+    - name: Copy the modules file into the container (/etc/opsi/modules)
+      ansible.builtin.command:
+        cmd: >-
+          docker cp {{ ludus_opsi_install_dir }}/modules
+          {{ ludus_opsi_container_id.stdout }}:/etc/opsi/modules
+      when: ludus_opsi_container_id.stdout | length > 0
+      changed_when: true
+      notify: "opsi compose recreate"

@@ -1,0 +1,10 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Run the license-free AD -> OPSI sync at regular intervals (ludus_opsi)
+
+[Timer]
+OnBootSec={{ ludus_opsi_ad_sync_on_boot_sec }}
+OnUnitActiveSec={{ ludus_opsi_ad_sync_on_unit_active_sec }}
+
+[Install]
+WantedBy=timers.target

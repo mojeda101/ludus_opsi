@@ -1,0 +1,69 @@
+---
+# ============================================================================
+# AD/LDAP authentication for opsiconfd
+# Lets directory users log into OPSI (configed / WebGUI / admin page) with
+# their AD credentials. Permissions follow membership in the opsiadmin /
+# opsifileadmins / opsireadonlys groups, which MUST exist in the directory.
+#
+# Configured via the [ldap_auth] section of /etc/opsi/opsi.conf inside the
+# container. NOTE: this OPSI feature requires the (paid) directory connector
+# module/license on the configserver - see ludus_opsi_modules_file_src.
+# ============================================================================
+
+- name: Warn if no modules license was provided for LDAP auth
+  ansible.builtin.debug:
+    msg: >-
+      LDAP/AD authentication requires the paid OPSI directory connector module.
+      No 'modules' license was supplied (ludus_opsi_modules_file_src is empty),
+      so opsiconfd may reject LDAP logins until a valid license is installed.
+  when: ludus_opsi_modules_file_src | length == 0
+
+- name: Render the [ldap_auth] block on the host
+  ansible.builtin.template:
+    src: opsi-ldap-auth.block.j2
+    dest: "{{ ludus_opsi_install_dir }}/opsi-ldap-auth.block"
+    mode: "0640"
+
+- name: Copy the opsi.conf merge helper to the host
+  ansible.builtin.copy:
+    src: merge_opsi_conf.py
+    dest: "{{ ludus_opsi_install_dir }}/merge_opsi_conf.py"
+    mode: "0750"
+
+- name: Copy the merge helper into the container
+  ansible.builtin.command:
+    cmd: docker compose cp merge_opsi_conf.py opsi-server:/tmp/merge_opsi_conf.py
+    chdir: "{{ ludus_opsi_install_dir }}"
+  changed_when: false
+
+- name: Copy the [ldap_auth] block into the container
+  ansible.builtin.command:
+    cmd: docker compose cp opsi-ldap-auth.block opsi-server:/tmp/opsi-ldap-auth.block
+    chdir: "{{ ludus_opsi_install_dir }}"
+  changed_when: false
+
+- name: Merge the [ldap_auth] section into /etc/opsi/opsi.conf
+  ansible.builtin.command:
+    cmd: >-
+      docker compose exec -T opsi-server
+      python3 /tmp/merge_opsi_conf.py /etc/opsi/opsi.conf /tmp/opsi-ldap-auth.block
+    chdir: "{{ ludus_opsi_install_dir }}"
+  register: ludus_opsi_ldap_merge
+  changed_when: "'CHANGED' in ludus_opsi_ldap_merge.stdout"
+  notify: "opsi-server restart"
+
+- name: Apply pending restart before testing
+  ansible.builtin.meta: flush_handlers
+
+- name: Test the LDAP auth configuration (informational)
+  ansible.builtin.command:
+    cmd: docker compose exec -T opsi-server opsiconfd test ldap_auth
+    chdir: "{{ ludus_opsi_install_dir }}"
+  register: ludus_opsi_ldap_test
+  changed_when: false
+  failed_when: false
+
+- name: Show the LDAP auth test output
+  ansible.builtin.debug:
+    var: ludus_opsi_ldap_test.stdout_lines
+  when: ludus_opsi_ldap_test.stdout | default('') | length > 0
